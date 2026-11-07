@@ -345,14 +345,25 @@
         if (presence) { const dd = (x - bx) ** 2 + (z - bz) ** 2; v += Math.exp(-dd / (walking ? 10 : 6)) * (0.5 + motion * 2); }
         values.push(Math.min(1, v));
       }
-      const amplitude = Array.from({ length: N }, (_, i) => {
-        const base = 12 + 6 * Math.sin(i / 7) + 3 * Math.cos(i / 3);
-        return base + (presence ? Math.sin(t * (walking ? 5 : 1.6) + i / 4) * (walking ? 5 : 1.2) : 0) + (Math.random() - 0.5);
+      // Three ESP32 nodes (Living Room, Kitchen, hall by the Bathroom). Each
+      // link is disturbed in proportion to how close the walking person is,
+      // so different rooms give different per-node patterns.
+      const DEMO_NODES = [[1, 2, 1.5], [2, 3.2, -3.9], [3, 6.6, -1.6]];
+      const B = [7.4, 4.1];
+      const demoNodes = DEMO_NODES.map(([id, nx, nz], k) => {
+        const dA = Math.hypot(tour.x - nx, tour.z - nz), dB = Math.hypot(B[0] - nx, B[1] - nz);
+        const gain = Math.exp(-(dA * dA) / 6) * (walking ? 6 : 1.6) + Math.exp(-(dB * dB) / 6) * 0.8;
+        const amp = Array.from({ length: N }, (_, i) => {
+          const base = 12 + 6 * Math.sin(i / 7 + k) + 3 * Math.cos(i / 3 + k * 2);
+          return base + Math.sin(t * (walking ? 5 : 1.6) + i / 4 + k) * gain + (Math.random() - 0.5) * 0.6;
+        });
+        return { node_id: id, position: [nx, 0, nz], rssi_dbm: -44 - 2.5 * k - Math.min(4, 6 / (0.5 + dA)) + (Math.random() - 0.5),
+          amplitude: amp, subcarrier_count: N, sync: { is_valid: true, is_leader: k === 0, csi_fps_ema: 9.8 - k * 0.2 } };
       });
+      const amplitude = demoNodes[0].amplitude;
       handleFrame({
         type: 'sensing_update', timestamp: Date.now() / 1000, source: 'simulated', _simulated: true,
-        nodes: [{ node_id: 1, position: [2, 0, 1.5], rssi_dbm: rssi, amplitude, subcarrier_count: N, sync: { is_valid: true, is_leader: true, csi_fps_ema: 9.8 } },
-                { node_id: 2, position: [5.1, 0, 0], rssi_dbm: rssi - 6, amplitude: [], subcarrier_count: N, sync: { is_valid: true, is_leader: false, csi_fps_ema: 9.6 } }],
+        nodes: demoNodes,
         features: { mean_rssi: rssi, motion_band_power: motion, breathing_band_power: breath },
         classification: { presence: true, motion_level: walking ? 'active' : 'present_still', confidence: presence ? 0.8 + Math.random() * 0.15 : 0.7 + Math.random() * 0.2 },
         estimated_persons: presence ? 2 : 1,

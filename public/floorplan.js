@@ -25,6 +25,23 @@ export const ROOMS = [
   },
 ];
 export const DOCK = [170, 914]; // Roomba dock, Living Room west wall
+
+// Rooms that share a wall/doorway on the map. "Bathroom" includes the hall
+// strip that joins the Living Room to the Bedroom.
+export const ADJACENT = {
+  Kitchen: ['Living Room', 'Bathroom'],
+  'Living Room': ['Kitchen', 'Bathroom'],
+  Bathroom: ['Kitchen', 'Living Room', 'Bedroom'],
+  Bedroom: ['Bathroom'],
+};
+
+// Network gear (map pixels). Defaults are guesses; the Map panel moves them.
+// Routers are transmitters: ESP32 nodes sense the path to the AP they join.
+export const DEVICES = [
+  { id: 'spectrum', label: 'Spectrum router', kind: 'ap', at: [505, 880] },
+  { id: 'decoWired', label: 'Deco (wired)', kind: 'ap', at: [535, 880] },
+  { id: 'decoLiving', label: 'Deco (Living Room)', kind: 'ap', at: [300, 760] },
+];
 const CX = 462, CY = 740;        // plan centre in pixels
 export const DEFAULT_SCALE = 0.015; // metres per map pixel (~9 m × 11 m)
 const WALL_H = 1.0;              // low "dollhouse" walls so people stay visible
@@ -60,15 +77,15 @@ function segDist([px, py], [ax, ay], [bx, by]) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
-function labelSprite(text) {
+export function labelSprite(text, color = "#cfdcff", w = 2.2) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 128;
   const g = c.getContext('2d');
   g.font = '600 56px "IBM Plex Mono", monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.shadowColor = 'rgba(120,160,255,0.9)'; g.shadowBlur = 18;
-  g.fillStyle = '#cfdcff'; g.fillText(text.toUpperCase(), 256, 64);
+  g.fillStyle = color; g.fillText(text.toUpperCase(), 256, 64);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false, opacity: 0.85 }));
-  sp.scale.set(2.2, 0.55, 1);
+  sp.scale.set(w, w / 4, 1);
   return sp;
 }
 

@@ -58,13 +58,27 @@
         <div class="hud hud-tl">
           <div class="hud-k">People</div><div class="hud-v" id="obsPeople">0</div>
           <div class="hud-k" id="obsSrc">no source</div>
-          <div class="hud-k hud-gap">Location</div><div class="hud-where" id="obsWhere">—</div>
+          <div class="hud-k hud-gap">Location</div><div class="hud-where" id="obsWhere">—</div><div class="hud-k" id="obsMode"></div>
         </div>
         <details class="mappanel" id="mapPanel">
           <summary>Map</summary>
           <label class="mrow"><input type="checkbox" id="mapOn" checked> Apartment floor plan</label>
-          <button type="button" class="btn sm mbtn" id="mapPlace">Place sensor</button>
-          <p class="mhelp">Press, then click where your ESP32 sits.</p>
+          <div class="mrow">
+            <select id="placeWhat" class="msel">
+              <option value="node:1">ESP32 node 1</option>
+              <option value="node:2">ESP32 node 2</option>
+              <option value="node:3">ESP32 node 3</option>
+            </select>
+            <button type="button" class="btn sm mbtn" id="mapPlace">Place</button>
+          </div>
+          <p class="mhelp">Pick a device, press Place, then click its spot on the map.</p>
+          <div class="msec">Room fingerprints</div>
+          <div class="mrow">
+            <select id="fpRoom" class="msel"></select>
+            <button type="button" class="btn sm mbtn" id="fpRec">Record 20 s</button>
+          </div>
+          <p class="mhelp" id="fpStatus">—</p>
+          <button type="button" class="btn sm mlink" id="fpClear">Clear fingerprints</button>
           <label class="mrow col">Rotate sensor space <span id="mapRotV">0°</span>
             <input type="range" id="mapRot" min="0" max="359" step="1" value="0"></label>
           <label class="mrow col">Map scale <span id="mapScaleV">—</span>
@@ -183,6 +197,21 @@
           <div class="node accent"><b>This page</b><span>tracker.ciprari.ai</span></div>
         </div>
         <p>All sensing data stays on your network. This page is static; it only connects to <code>127.0.0.1</code> on the computer you open it on. Nothing is sent to Cloudflare.</p>
+
+        <h3>Your apartment: where to put sensors</h3>
+        <p>Your Spectrum router and the two Deco units can't be the sensors: their firmware doesn't expose channel data (CSI). They are still the <b>transmitters</b>. Each ESP32-S3 measures the radio path between itself and the access point it joins, and a person who crosses or stands near that path disturbs it. Room accuracy comes from having paths that cross different rooms.</p>
+        <ol>
+          <li><b>Node 1 · Kitchen</b>, far wall. It joins the Living Room Deco, so its path crosses the Living Room into the Kitchen.</li>
+          <li><b>Node 2 · Hallway by the Bathroom</b>. It joins the Spectrum router or wired Deco in the Bedroom, so its path covers the hall and Bedroom.</li>
+          <li><b>Node 3 (optional) · Living Room</b>, near the Roomba dock wall. Its path to the Bedroom router crosses the hall, which separates the Living Room from the Bedroom much better.</li>
+        </ol>
+        <p class="muted">Mount nodes about 1 m high, at least 2 m from any router, and not behind metal or appliances. ESP32-S3 is 2.4 GHz only, so keep 2.4 GHz enabled on the Spectrum router and Decos. The same network name is fine.</p>
+        <p><b>Then teach it your rooms</b> (3D View → Map):</p>
+        <ol>
+          <li>Pick each ESP32 node, the Spectrum router and both Decos, press <b>Place</b>, and click their real spots.</li>
+          <li>Under <b>Room fingerprints</b>, choose a room, press <b>Record 20 s</b>, and walk around that room the whole time. Do every room. Then record <b>Nobody home</b> with the apartment empty.</li>
+          <li>Location now comes from your fingerprints instead of the server's estimate. Re-record a room if you move furniture or a node.</li>
+        </ol>
 
         <h3>0 · Try it with no hardware</h3>
         <p>Choose <b>Demo data</b> on the Live tab. Or run the real server in simulated mode (step 2 without an ESP32) to test the full chain.</p>

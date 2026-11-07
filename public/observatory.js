@@ -6,7 +6,8 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/exampl
 import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js/+esm';
 import { RenderPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js/+esm';
 import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js/+esm';
-import { buildPlan, roomAt, DEFAULT_SCALE, pxToWorld, ROOMS } from './floorplan.js';
+import { buildPlan, roomAt, DEFAULT_SCALE, pxToWorld, ROOMS, DEVICES, labelSprite } from './floorplan.js';
+import { RoomFingerprints, RoomHysteresis } from './rooms.js';
 
 const host = document.getElementById('obsStage');
 const ROOM = 10; // metres covered by the signal field (x and z)
@@ -145,8 +146,9 @@ function updateNodes(nodes) {
     const id = n.node_id ?? idx;
     let g = nodeGroups.get(id);
     if (!g) { g = makeNode(id); nodeGroups.set(id, g); }
-    const [x, z] = nodePos(n, idx);
-    g.position.set(clampRoom(x), 0, clampRoom(z));
+    const placed = placedNodeLocal(id, idx);
+    if (placed) g.position.copy(placed);
+    else { const [x, z] = nodePos(n, idx); g.position.set(clampRoom(x), 0, clampRoom(z)); }
     if (idx === 0 && g.position.distanceTo(sensorLocal) > 0.01) { sensorLocal.copy(g.position); applyCalibration(); }
     g.userData.seen = now;
   });
@@ -284,11 +286,14 @@ function fieldPeak(sf) {
   return [((bi % gx) + 0.5) / gx * ROOM - ROOM / 2, (Math.floor(bi / gx) + 0.5) / gz * ROOM - ROOM / 2];
 }
 
+const fp = new RoomFingerprints();
+
 window.addEventListener('ruview-frame', (e) => {
   const d = e.detail || {};
   lastFrameAt = performance.now();
   if (idleNode.parent) space.remove(idleNode);
   updateNodes(Array.isArray(d.nodes) ? d.nodes : []);
+  fp.ingest(d);
 
   if (d.signal_field && Array.isArray(d.signal_field.values) && d.signal_field.values.length === FIELD * FIELD) {
     tileTarget.set(d.signal_field.values);
@@ -316,21 +321,83 @@ window.addEventListener('ruview-frame', (e) => {
     if (u.alpha < 0.05) u.pos.copy(u.tpos);
     u.motion = Math.min(1, (num(p.motion_score) ?? mot * 60) / 60);
   });
+  applyFingerprint(persons.length);
   document.getElementById('obsPeople').textContent = String(persons.length);
 });
 
 const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
 
 // ---------- apartment floor plan + calibration ----------
-// cfg.px/py: where the first sensor sits on the Roomba map (map pixels);
+// cfg.px/py: where ESP32 node 1 sits on the Roomba map (map pixels);
+// cfg.nodes[id]: map spot for further ESP32 nodes; cfg.dev[id]: router/Deco spots;
 // cfg.rot: rotation of sensor space (degrees); cfg.scale: metres per map pixel.
 const sensorLocal = new THREE.Vector3(2, 0, 1.5);
 const CFG_KEY = 'obs.plan.v1';
 const LIVING = ROOMS.find((r) => r.name === 'Living Room').label;
-const cfg = Object.assign({ on: true, px: LIVING[0], py: LIVING[1], rot: 0, scale: DEFAULT_SCALE },
+const cfg = Object.assign({ on: true, px: LIVING[0], py: LIVING[1], rot: 0, scale: DEFAULT_SCALE, nodes: {}, dev: {} },
   (() => { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch { return {}; } })());
+cfg.nodes ||= {}; cfg.dev ||= {};
 const saveCfg = () => { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch { /* ignore */ } };
 let plan = null;
+const pxToV3 = (p) => { const [x, z] = pxToWorld(p, cfg.scale); return new THREE.Vector3(x, 0, z); };
+
+// local (sensor-space) position for a placed ESP32 node; node 1 is the anchor
+function placedNodeLocal(id, idx) {
+  const p = cfg.nodes[id];
+  if (!cfg.on || !p || idx === 0) return null;
+  return space.worldToLocal(pxToV3(p));
+}
+
+// ---------- routers / Decos and sensing paths ----------
+let apGroup = null;
+const apWorld = new Map();
+function rebuildDevices() {
+  if (apGroup) scene.remove(apGroup);
+  apGroup = new THREE.Group(); apWorld.clear();
+  if (!cfg.on) return;
+  DEVICES.forEach((dv, di) => {
+    const w = pxToV3(cfg.dev[dv.id] || dv.at);
+    apWorld.set(dv.id, w);
+    const g = new THREE.Group(); g.position.copy(w);
+    const puck = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, dv.id.startsWith('deco') ? 0.22 : 0.08, 20),
+      new THREE.MeshStandardMaterial({ color: '#e9eefc', emissive: '#3048a0', emissiveIntensity: 0.6 }));
+    puck.position.y = 0.12; g.add(puck);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: '#ffffff', blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.55 }));
+    glow.scale.setScalar(0.6); glow.position.y = 0.3; g.add(glow);
+    const lab = labelSprite(dv.label, '#ffe39a', 1.5); lab.position.y = 0.75 + di * 0.32; g.add(lab);
+    apGroup.add(g);
+  });
+  scene.add(apGroup);
+}
+const MAX_LINKS = 8;
+const linkGeo = new THREE.BufferGeometry();
+linkGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_LINKS * 6), 3));
+linkGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(MAX_LINKS * 6), 3));
+const links = new THREE.LineSegments(linkGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+scene.add(links);
+const nwp = new THREE.Vector3();
+function updateLinks(t) {
+  const pos = linkGeo.attributes.position.array, col = linkGeo.attributes.color.array;
+  let n = 0;
+  if (cfg.on && apWorld.size) {
+    const groups = nodeGroups.size ? [...nodeGroups.values()] : idleNode.parent ? [idleNode] : [];
+    for (const g of groups) {
+      if (n >= MAX_LINKS) break;
+      g.getWorldPosition(nwp);
+      let best = null, bd = Infinity;
+      for (const w of apWorld.values()) { const dd = w.distanceTo(nwp); if (dd < bd) { bd = dd; best = w; } }
+      if (!best) continue;
+      pos.set([nwp.x, 0.35, nwp.z, best.x, 0.3, best.z], n * 6);
+      const e = Math.min(1, (fp.energy.get(g.userData.id) || 0) * 25);
+      const k = 0.25 + 0.75 * e + 0.08 * Math.sin(t * 4 + n);
+      col.set([0.2 * k, 1 * k, 0.45 * k, 0.9 * k, 0.85 * k, 0.4 * k], n * 6);
+      n++;
+    }
+  }
+  linkGeo.setDrawRange(0, n * 2);
+  linkGeo.attributes.position.needsUpdate = true;
+  linkGeo.attributes.color.needsUpdate = true;
+}
 
 function rebuildPlan() {
   if (plan) { scene.remove(plan.group); plan.group.traverse((o) => { o.geometry?.dispose(); }); plan = null; }
@@ -338,6 +405,7 @@ function rebuildPlan() {
   grid.visible = !cfg.on;
   scene.fog.density = cfg.on ? 0.028 : 0.055;
   applyCalibration();
+  rebuildDevices();
 }
 
 function applyCalibration() {
@@ -368,17 +436,21 @@ function frameCamera() {
   else { camera.position.set(4.2, 3.0, 5.8); controls.target.set(0, 0.9, -0.5); controls.maxDistance = 18; }
 }
 
-// map panel controls
+// ---------- map panel controls ----------
+const $id = (id) => document.getElementById(id);
 const ui = {
-  on: document.getElementById('mapOn'), rot: document.getElementById('mapRot'), scale: document.getElementById('mapScale'),
-  place: document.getElementById('mapPlace'), rotV: document.getElementById('mapRotV'), scaleV: document.getElementById('mapScaleV'),
-  where: document.getElementById('obsWhere'), panel: document.getElementById('mapPanel'),
+  on: $id('mapOn'), rot: $id('mapRot'), scale: $id('mapScale'), place: $id('mapPlace'), what: $id('placeWhat'),
+  rotV: $id('mapRotV'), scaleV: $id('mapScaleV'), where: $id('obsWhere'), panel: $id('mapPanel'),
+  fpRoom: $id('fpRoom'), fpRec: $id('fpRec'), fpClear: $id('fpClear'), fpStatus: $id('fpStatus'), mode: $id('obsMode'),
 };
+for (const dv of DEVICES) ui.what.add(new Option(dv.label, 'dev:' + dv.id));
+for (const r of ROOMS) ui.fpRoom.add(new Option(r.name, r.name));
+ui.fpRoom.add(new Option('Nobody home (empty)', 'Empty'));
+
 function syncUi() {
   ui.on.checked = cfg.on; ui.rot.value = cfg.rot; ui.scale.value = Math.round(cfg.scale * 10000);
   ui.rotV.textContent = cfg.rot + '°';
-  const w = (766 - 158) * cfg.scale;
-  ui.scaleV.textContent = w.toFixed(1) + ' m wide';
+  ui.scaleV.textContent = ((766 - 158) * cfg.scale).toFixed(1) + ' m wide';
   ui.panel.classList.toggle('off', !cfg.on);
 }
 ui.on.addEventListener('change', () => { cfg.on = ui.on.checked; saveCfg(); rebuildPlan(); frameCamera(); syncUi(); });
@@ -386,11 +458,8 @@ ui.rot.addEventListener('input', () => { cfg.rot = Number(ui.rot.value); saveCfg
 ui.scale.addEventListener('input', () => { cfg.scale = Number(ui.scale.value) / 10000; saveCfg(); rebuildPlan(); syncUi(); });
 
 let placing = false;
-ui.place.addEventListener('click', () => {
-  placing = !placing;
-  ui.place.textContent = placing ? 'Click the map…' : 'Place sensor';
-  ui.place.classList.toggle('armed', placing);
-});
+function setPlacing(on) { placing = on; ui.place.textContent = on ? 'Click the map…' : 'Place'; ui.place.classList.toggle('armed', on); }
+ui.place.addEventListener('click', () => setPlacing(!placing));
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
@@ -401,29 +470,87 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   ray.setFromCamera(ndc, camera);
   const hit = new THREE.Vector3();
   if (!ray.ray.intersectPlane(ground, hit)) return;
-  cfg.px = hit.x / cfg.scale + 462; cfg.py = hit.z / cfg.scale + 740;
-  placing = false; ui.place.textContent = 'Place sensor'; ui.place.classList.remove('armed');
-  saveCfg(); applyCalibration();
+  const px = [hit.x / cfg.scale + 462, hit.z / cfg.scale + 740];
+  const what = ui.what.value;
+  if (what === 'node:1') { cfg.px = px[0]; cfg.py = px[1]; }
+  else if (what.startsWith('node:')) cfg.nodes[what.slice(5)] = px;
+  else if (what.startsWith('dev:')) cfg.dev[what.slice(4)] = px;
+  setPlacing(false);
+  saveCfg(); applyCalibration(); rebuildDevices();
 });
 
-// which room is each person in?
+// ---------- room fingerprints ----------
+function fpStatusText() {
+  if (fp.recording) {
+    const left = Math.max(0, Math.ceil((fp.recording.until - performance.now()) / 1000));
+    return `Recording ${fp.recording.room}: walk around it… ${left}s`;
+  }
+  const names = Object.keys(fp.counts());
+  if (!names.length) return "Not trained yet. Using the server's positions.";
+  const list = names.map((n) => `${n} ✓`).join(', ');
+  return fp.ready() ? `Trained: ${list}` : `Trained: ${list}. Record at least 2 rooms with the same nodes online.`;
+}
+function refreshFpUi() {
+  ui.fpStatus.textContent = fpStatusText();
+  ui.fpRec.disabled = !!fp.recording;
+  ui.fpRec.textContent = fp.recording ? 'Recording…' : 'Record 20 s';
+}
+fp.onChange(refreshFpUi);
+setInterval(() => { if (fp.recording) refreshFpUi(); }, 500);
+ui.fpRec.addEventListener('click', () => {
+  if (!fp.record(ui.fpRoom.value, 20, refreshFpUi)) { ui.fpStatus.textContent = 'Connect a source with CSI amplitudes first.'; return; }
+  refreshFpUi();
+});
+ui.fpClear.addEventListener('click', () => { fp.clear(); refreshFpUi(); });
+refreshFpUi();
+
+// When fingerprints are trained they decide the room; the most active figure
+// is moved into that room if the server's position put it elsewhere.
+const anchorLocal = new THREE.Vector3(), tmpW = new THREE.Vector3();
+function applyFingerprint(count) {
+  if (!cfg.on || !fp.ready() || fp.recording) return;
+  const room = fp.result.room;
+  if (!room) return;
+  if (room === 'Empty') { figures.forEach((f) => (f.userData.talpha = 0)); return; }
+  let primary = null;
+  for (let i = 0; i < Math.min(count, figures.length); i++) {
+    const f = figures[i]; if (!primary || f.userData.motion > primary.userData.motion) primary = f;
+  }
+  if (!primary) return;
+  tmpW.copy(primary.userData.tpos); space.localToWorld(tmpW);
+  if (roomAt(tmpW.x, tmpW.z, cfg.scale) === room) return;
+  const r = ROOMS.find((x) => x.name === room);
+  space.worldToLocal(anchorLocal.copy(pxToV3(r.label)));
+  primary.userData.tpos.copy(anchorLocal);
+}
+
+// ---------- which room is each person in? ----------
 const wpos = new THREE.Vector3();
 let lastRoomsKey = '';
 function updateRooms() {
   const counts = new Map();
   for (const f of figures) {
-    if (f.userData.talpha < 0.5 || !f.visible) continue;
+    const u = f.userData;
+    if (u.talpha < 0.5 || !f.visible) { u.hyst = null; continue; }
     f.getWorldPosition(wpos);
-    const name = cfg.on ? roomAt(wpos.x, wpos.z, cfg.scale) || 'Outside map' : null;
-    if (name) counts.set(name, (counts.get(name) || 0) + 1);
+    if (!cfg.on) continue;
+    const raw = roomAt(wpos.x, wpos.z, cfg.scale) || 'Outside map';
+    u.hyst ||= new RoomHysteresis(800, 2500);
+    const name = u.hyst.update(raw) || raw;
+    counts.set(name, (counts.get(name) || 0) + 1);
   }
+  const usingFp = cfg.on && fp.ready();
+  ui.mode.textContent = !cfg.on ? '' : usingFp
+    ? `room fingerprint${fp.result.room ? ' · ' + Math.round(fp.result.confidence * 100) + '%' : ''}`
+    : 'server position';
+  if (usingFp && fp.result.room === 'Empty') counts.clear();
   const key = [...counts].map(([n, c]) => n + ':' + c).sort().join('|');
   if (key === lastRoomsKey) return;
   lastRoomsKey = key;
   if (plan) plan.setActive(new Set(counts.keys()));
   ui.where.textContent = !cfg.on ? '' : counts.size
     ? [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(' · ')
-    : '—';
+    : (usingFp && fp.result.room === 'Empty' ? 'Nobody home' : '—');
   window.dispatchEvent(new CustomEvent('ruview-rooms', { detail: Object.fromEntries(counts) }));
 }
 
@@ -467,6 +594,7 @@ function tick() {
     }
   }
   updateParticles(dt);
+  updateLinks(t);
 
   const stale = performance.now() - lastFrameAt > 3000;
   document.getElementById('obsWaiting').hidden = !stale;
