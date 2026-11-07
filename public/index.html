@@ -27,16 +27,7 @@
     </div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button role="tab" class="tab active" data-tab="live">Live</button>
-    <button role="tab" class="tab" data-tab="setup">Setup</button>
-    <button role="tab" class="tab" data-tab="about">About the research</button>
-  </nav>
-
-  <main>
-    <!-- LIVE -->
-    <section id="tab-live" class="panel active">
-      <form id="connForm" class="conn">
+  <form id="connForm" class="conn">
         <label class="field">
           <span>Source</span>
           <select id="mode">
@@ -50,8 +41,52 @@
           <input id="url" type="text" spellcheck="false" autocomplete="off" value="http://127.0.0.1:3100">
         </label>
         <button id="connectBtn" class="btn primary" type="submit">Connect</button>
-      </form>
-      <p id="hint" class="hint"></p>
+  </form>
+  <p id="hint" class="hint"></p>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab active" data-tab="obs">3D View</button>
+    <button role="tab" class="tab" data-tab="live">Signals</button>
+    <button role="tab" class="tab" data-tab="setup">Setup</button>
+    <button role="tab" class="tab" data-tab="about">About the research</button>
+  </nav>
+
+  <main>
+    <!-- 3D OBSERVATORY -->
+    <section id="tab-obs" class="panel active">
+      <div id="obsStage" class="stage">
+        <div class="hud hud-tl">
+          <div class="hud-k">People</div><div class="hud-v" id="obsPeople">0</div>
+          <div class="hud-k" id="obsSrc">no source</div>
+        </div>
+        <aside class="vitals">
+          <h3>Vital signs</h3>
+          <div class="vrow">
+            <div class="vlabel"><svg viewBox="0 0 24 24" class="ic heart"><path d="M12 20s-7-4.4-9-9a4.6 4.6 0 0 1 9-3 4.6 4.6 0 0 1 9 3c-2 4.6-9 9-9 9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Heart rate</div>
+            <div class="vnum"><b id="obsHr">—</b><small>BPM</small></div>
+            <div class="vbar"><i id="obsHrBar"></i></div>
+          </div>
+          <div class="vrow">
+            <div class="vlabel"><svg viewBox="0 0 24 24" class="ic lung"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Respiration</div>
+            <div class="vnum"><b id="obsBr">—</b><small>RPM</small></div>
+            <div class="vbar"><i id="obsBrBar"></i></div>
+          </div>
+          <div class="vrow">
+            <div class="vlabel"><svg viewBox="0 0 24 24" class="ic conf"><path d="M4 18l5-6 4 3 7-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Confidence</div>
+            <div class="vnum"><b id="obsCf">—</b><small>%</small></div>
+            <div class="vbar"><i id="obsCfBar"></i></div>
+          </div>
+          <p id="obsVitalNote" class="vnote" hidden></p>
+        </aside>
+        <div id="obsWaiting" class="waiting">Connect a source to see people in the room</div>
+        <button id="obsReset" class="btn ghost sm hud-br" type="button">Reset view</button>
+        <noscript><p class="waiting">The 3D view needs JavaScript and WebGL.</p></noscript>
+      </div>
+      <p class="muted obs-foot">Drag to orbit · scroll to zoom. Figures come from the server's pose keypoints; blue domes are sensing nodes; green floor tiles are signal-field strength.</p>
+    </section>
+
+    <!-- LIVE -->
+    <section id="tab-live" class="panel">
 
       <div class="tiles">
         <article class="tile" id="tPresence">
@@ -206,5 +241,6 @@ docker run --rm -e RUVIEW_API_TOKEN -e CSI_SOURCE=esp32 `
 
   <footer class="foot">Static page · data stays on your machine · <a href="https://github.com/coledtouch/tracker" target="_blank" rel="noopener">source</a></footer>
   <script src="app.js"></script>
+  <script type="module" src="observatory.js"></script>
 </body>
 </html>

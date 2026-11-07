@@ -66,6 +66,30 @@
   const waterfall = []; // rows of amplitude arrays
   let lastField = null, total = 0, frameTimes = [], lastRawAt = 0, lastPresence = null;
   let ws = null, demoTimer = null, reconnectTimer = null, wantConnected = false, attempt = 0;
+  let restVitals = { heart: null, breath: null, note: '' }, vitalsTimer = null, lastVitalsAt = 0;
+
+  // The server's /api/v1/vital-signs explains *why* vitals are missing
+  // (e.g. it abstains until calibrated). Poll it through the bridge.
+  function startVitalsPoll(base) {
+    clearInterval(vitalsTimer);
+    const poll = async () => {
+      try {
+        const r = await fetch(base + '/api/v1/vital-signs', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        const v = j.vital_signs || {};
+        const reason = j.abstention_reason || j.message || '';
+        restVitals = {
+          heart: num(v.heart_rate_bpm),
+          breath: num(v.breathing_rate_bpm),
+          note: j.authority === 'abstained' || (v.heart_rate_bpm == null && v.breathing_rate_bpm == null)
+            ? 'Server is withholding vitals' + (reason ? ': ' + reason + '.' : '.') : '',
+        };
+      } catch { /* bridge down; frames will say so */ }
+    };
+    poll();
+    vitalsTimer = setInterval(poll, 3000);
+  }
 
   function push(arr, v) { arr.push(v); if (arr.length > HIST) arr.shift(); }
   const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
@@ -109,8 +133,18 @@
 
     const br = num(vs.breathing_bpm) ?? num(vs.breathing_rate_bpm) ?? num(vs.breathing_rate);
     const hr = num(vs.heart_rate_bpm) ?? num(vs.hr_proxy_bpm) ?? num(vs.heart_rate);
-    $('vBreath').textContent = fmt(br, 1);
-    $('vHeart').textContent = fmt(hr, 0);
+    const brAll = br ?? restVitals.breath, hrAll = hr ?? restVitals.heart;
+    $('vBreath').textContent = fmt(brAll, 1);
+    $('vHeart').textContent = fmt(hrAll, 0);
+    window.dispatchEvent(new CustomEvent('ruview-frame', { detail: d }));
+    if (now - lastVitalsAt > 400) {
+      lastVitalsAt = now;
+      window.dispatchEvent(new CustomEvent('ruview-vitals', { detail: {
+        heart: hrAll, breath: brAll, confidence: num(c.confidence),
+        note: hrAll == null && brAll == null ? (restVitals.note || (present ? 'Vital signs not reported by this source.' : 'No one detected.')) : '',
+      } }));
+    }
+    $('obsSrc').textContent = { live: 'live csi', sim: 'server simulated', demo: 'demo data' }[src];
     $('vRssi').textContent = fmt(rssi, 1);
     $('vNodes').textContent = 'nodes: ' + nodes.length;
     $('vTotal').textContent = 'total: ' + total;
@@ -185,6 +219,7 @@
         else if (!h.token) setHint('Bridge has no RUVIEW_API_TOKEN set. The live stream will be refused. Set it in the same shell and restart the bridge.', true);
         else setHint('Bridge and server reachable.');
         probeStatus(base);
+        startVitalsPoll(base);
       } catch (e) {
         setHint(`Can't reach the bridge at ${base}. Start it with "node bridge/ruview-bridge.mjs", and allow local network access if Chrome asks.`, true);
         log('bridge unreachable: ' + e.message, 'err');
@@ -234,15 +269,37 @@
   }
   function disconnect(why) {
     wantConnected = false; clearTimeout(reconnectTimer); clearInterval(demoTimer); demoTimer = null;
+    clearInterval(vitalsTimer); restVitals = { heart: null, breath: null, note: '' };
+    window.dispatchEvent(new CustomEvent('ruview-vitals', { detail: {} }));
+    $('obsSrc').textContent = 'no source';
     if (ws) { ws.close(); ws = null; }
     setBtn(false); modeEl.disabled = false; urlEl.disabled = false;
     setConn('', 'Disconnected'); setSource('none'); log('disconnected' + (why ? ' (' + why + ')' : ''));
     syncForm();
   }
 
+  // COCO-17 keypoints in image pixels (y down), same shape the server sends.
+  const KP_NAMES = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'];
+  function demoKeypoints(t, walking, wave) {
+    const cx = 320, s = 120; // ~1.8 body-units tall
+    const sw = walking ? Math.sin(t * 6) : 0;           // gait phase
+    const br = Math.sin(t * 1.5) * 0.008;               // breathing chest rise
+    const pts = {
+      nose: [0, -1.62], left_eye: [-0.04, -1.66], right_eye: [0.04, -1.66], left_ear: [-0.08, -1.63], right_ear: [0.08, -1.63],
+      left_shoulder: [-0.2, -1.42 - br], right_shoulder: [0.2, -1.42 - br],
+      left_hip: [-0.12, -0.92], right_hip: [0.12, -0.92],
+      left_elbow: [-0.25 - sw * 0.06, -1.13], right_elbow: [0.25 + sw * 0.06, -1.13],
+      left_wrist: [-0.27 - sw * 0.14, -0.86], right_wrist: [0.27 + sw * 0.14, -0.86],
+      left_knee: [-0.13 + sw * 0.1, -0.5], right_knee: [0.13 - sw * 0.1, -0.5],
+      left_ankle: [-0.13 + sw * 0.2, -0.06 - Math.max(0, sw) * 0.08], right_ankle: [0.13 - sw * 0.2, -0.06 - Math.max(0, -sw) * 0.08],
+    };
+    if (wave) { pts.right_elbow = [0.36, -1.5]; pts.right_wrist = [0.42 + Math.sin(t * 8) * 0.08, -1.82]; }
+    return KP_NAMES.map((name) => ({ name, x: cx + pts[name][0] * s, y: 380 + pts[name][1] * s, z: 0, confidence: 0.8 }));
+  }
+
   // ---------- demo generator (sensing_update shape) ----------
   function startDemo() {
-    setConn('on', 'Demo running'); setHint('Synthetic data. A simulated person walks in and out every ~40 s.');
+    setConn('on', 'Demo running'); setHint('Synthetic data: one person walks in and out every ~40 s, another stands still.');
     log('demo stream started', 'ok');
     const N = 56, G = 20; const t0 = performance.now() / 1000;
     demoTimer = setInterval(() => {
@@ -268,9 +325,16 @@
         nodes: [{ node_id: 1, rssi_dbm: rssi, amplitude, subcarrier_count: N, sync: { is_valid: true, is_leader: true, csi_fps_ema: 9.8 } },
                 { node_id: 2, rssi_dbm: rssi - 6, amplitude: [], subcarrier_count: N, sync: { is_valid: true, is_leader: false, csi_fps_ema: 9.6 } }],
         features: { mean_rssi: rssi, motion_band_power: motion, breathing_band_power: breath },
-        classification: { presence, motion_level: !presence ? 'absent' : walking ? 'active' : 'present_still', confidence: presence ? 0.8 + Math.random() * 0.15 : 0.7 + Math.random() * 0.2 },
-        estimated_persons: presence ? 1 : 0,
-        vital_signs: presence && !walking ? { breathing_bpm: 14 + Math.sin(t * 0.1) * 1.5, hr_proxy_bpm: 68 + Math.sin(t * 0.07) * 4 } : {},
+        classification: { presence: true, motion_level: walking ? 'active' : 'present_still', confidence: presence ? 0.8 + Math.random() * 0.15 : 0.7 + Math.random() * 0.2 },
+        estimated_persons: presence ? 2 : 1,
+        persons: [
+          // person A walks a loop across the room, leaves and returns
+          ...(presence ? [{ id: 1, confidence: 0.85, position: [Math.sin(t * 0.25) * 3, 0, Math.cos(t * 0.19) * 2.5 - 0.5],
+            motion_score: walking ? 55 : 8, keypoints: demoKeypoints(t, walking, false) }] : []),
+          // person B stands near the wall, breathing, waving now and then
+          { id: 2, confidence: 0.8, position: [-2.6, 0, -2.4], motion_score: 4, keypoints: demoKeypoints(t, false, Math.sin(t * 0.3) > 0.85) },
+        ],
+        vital_signs: { breathing_bpm: 17 + Math.sin(t * 0.1) * 1.5, hr_proxy_bpm: 82 + Math.sin(t * 0.07) * 4 },
         signal_field: { grid_size: [G, 1, G], values },
       });
     }, 100);
