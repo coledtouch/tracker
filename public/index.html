@@ -58,7 +58,18 @@
         <div class="hud hud-tl">
           <div class="hud-k">People</div><div class="hud-v" id="obsPeople">0</div>
           <div class="hud-k" id="obsSrc">no source</div>
+          <div class="hud-k hud-gap">Location</div><div class="hud-where" id="obsWhere">—</div>
         </div>
+        <details class="mappanel" id="mapPanel">
+          <summary>Map</summary>
+          <label class="mrow"><input type="checkbox" id="mapOn" checked> Apartment floor plan</label>
+          <button type="button" class="btn sm mbtn" id="mapPlace">Place sensor</button>
+          <p class="mhelp">Press, then click where your ESP32 sits.</p>
+          <label class="mrow col">Rotate sensor space <span id="mapRotV">0°</span>
+            <input type="range" id="mapRot" min="0" max="359" step="1" value="0"></label>
+          <label class="mrow col">Map scale <span id="mapScaleV">—</span>
+            <input type="range" id="mapScale" min="90" max="260" step="1" value="150"></label>
+        </details>
         <aside class="vitals">
           <h3>Vital signs</h3>
           <div class="vrow">

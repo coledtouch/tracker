@@ -6,6 +6,7 @@ import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/exampl
 import { EffectComposer } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js/+esm';
 import { RenderPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js/+esm';
 import { UnrealBloomPass } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js/+esm';
+import { buildPlan, roomAt, DEFAULT_SCALE, pxToWorld, ROOMS } from './floorplan.js';
 
 const host = document.getElementById('obsStage');
 const ROOM = 10; // metres covered by the signal field (x and z)
@@ -23,6 +24,10 @@ host.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#05060c');
 scene.fog = new THREE.FogExp2('#05060c', 0.055);
+// Everything RuView reports lives in "sensor space"; this group is moved and
+// rotated so that space lines up with the apartment floor plan.
+const space = new THREE.Group();
+scene.add(space);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
 camera.position.set(4.2, 3.0, 5.8);
@@ -52,7 +57,7 @@ floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 const grid = new THREE.GridHelper(ROOM, 20, '#1b2350', '#121733');
 grid.position.y = 0.002;
-scene.add(grid);
+space.add(grid);
 const fillLight = new THREE.PointLight('#4a5cff', 6, 20, 1.6);
 fillLight.position.set(0, 4, 0);
 scene.add(fillLight);
@@ -79,6 +84,7 @@ const tiles = new THREE.InstancedMesh(tileGeo, tileMat, FIELD * FIELD);
 tiles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 const tileVals = new Float32Array(FIELD * FIELD);
 const tileTarget = new Float32Array(FIELD * FIELD);
+const tileMask = new Float32Array(FIELD * FIELD).fill(1); // 0 = outside the apartment
 {
   const m = new THREE.Matrix4();
   for (let z = 0; z < FIELD; z++) for (let x = 0; x < FIELD; x++) {
@@ -88,7 +94,7 @@ const tileTarget = new Float32Array(FIELD * FIELD);
     tiles.setColorAt(i, new THREE.Color(0, 0, 0));
   }
 }
-scene.add(tiles);
+space.add(tiles);
 const tmpC = new THREE.Color();
 function updateTiles(dt) {
   const k = Math.min(1, dt * 6);
@@ -100,7 +106,7 @@ function updateTiles(dt) {
     tileVals[i] += (norm - tileVals[i]) * k;
     const v = tileVals[i];
     const a = v < 0.2 ? 0 : Math.pow((v - 0.2) / 0.8, 1.2);
-    tmpC.copy(GREEN).multiplyScalar(a * 1.6);
+    tmpC.copy(GREEN).multiplyScalar(a * 1.6 * tileMask[i]);
     tiles.setColorAt(i, tmpC);
   }
   tiles.instanceColor.needsUpdate = true;
@@ -125,7 +131,7 @@ function makeNode(id) {
   const led = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: '#6f8bff', blending: THREE.AdditiveBlending, depthWrite: false }));
   led.scale.setScalar(0.35); led.position.y = 0.12; g.add(led);
   g.userData = { domes, led, id, seen: performance.now() };
-  scene.add(g);
+  space.add(g);
   return g;
 }
 function nodePos(n, idx) {
@@ -141,9 +147,10 @@ function updateNodes(nodes) {
     if (!g) { g = makeNode(id); nodeGroups.set(id, g); }
     const [x, z] = nodePos(n, idx);
     g.position.set(clampRoom(x), 0, clampRoom(z));
+    if (idx === 0 && g.position.distanceTo(sensorLocal) > 0.01) { sensorLocal.copy(g.position); applyCalibration(); }
     g.userData.seen = now;
   });
-  for (const [id, g] of nodeGroups) if (now - g.userData.seen > 5000) { scene.remove(g); nodeGroups.delete(id); }
+  for (const [id, g] of nodeGroups) if (now - g.userData.seen > 5000) { space.remove(g); nodeGroups.delete(id); }
 }
 // a default node so the scene isn't empty before data arrives
 const idleNode = makeNode('idle'); idleNode.position.set(2, 0, 1.5);
@@ -182,7 +189,7 @@ function makeFigure() {
   const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.45, 24), new THREE.MeshBasicMaterial({ color: '#29ff66', transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
   shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.01; g.add(shadow);
   g.userData = { lines, joints, head, glows, halo, pts: null, target: null, pos: new THREE.Vector3(), tpos: new THREE.Vector3(), alpha: 0, talpha: 0, motion: 0 };
-  scene.add(g);
+  space.add(g);
   return g;
 }
 
@@ -206,6 +213,7 @@ function standingPose() {
 }
 
 const va = new THREE.Vector3();
+const camLocal = new THREE.Vector3();
 function updateFigure(f, dt, t) {
   const u = f.userData;
   const k = Math.min(1, dt * 8);
@@ -217,7 +225,8 @@ function updateFigure(f, dt, t) {
   u.pos.lerp(u.tpos, Math.min(1, dt * 3));
   f.position.copy(u.pos);
   // face the camera horizontally so the 2D pose reads well
-  f.rotation.y = Math.atan2(camera.position.x - f.position.x, camera.position.z - f.position.z);
+  space.worldToLocal(camLocal.copy(camera.position));
+  f.rotation.y = Math.atan2(camLocal.x - f.position.x, camLocal.z - f.position.z);
 
   const arr = u.lines.geometry.attributes.position.array;
   BONES.forEach(([a, b], i) => { u.pts[a].toArray(arr, i * 6); u.pts[b].toArray(arr, i * 6 + 3); });
@@ -240,7 +249,7 @@ function updateFigure(f, dt, t) {
 const PCOUNT = 160;
 const particles = Array.from({ length: PCOUNT }, () => {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW, color: '#2bff5e', blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }));
-  s.visible = false; s.userData = { life: 0, max: 1, v: new THREE.Vector3() }; scene.add(s); return s;
+  s.visible = false; s.userData = { life: 0, max: 1, v: new THREE.Vector3() }; space.add(s); return s;
 });
 let pIdx = 0;
 function emit(pos, n, energy) {
@@ -264,7 +273,7 @@ function updateParticles(dt) {
 }
 
 // ---------- data intake ----------
-const clampRoom = (v) => Math.max(-ROOM / 2 + 0.3, Math.min(ROOM / 2 - 0.3, v));
+const clampRoom = (v) => Math.max(-14, Math.min(14, v)); // generous: positions may lie beyond the signal grid
 let lastFrameAt = 0;
 let motionLevel = 0;
 function fieldPeak(sf) {
@@ -278,7 +287,7 @@ function fieldPeak(sf) {
 window.addEventListener('ruview-frame', (e) => {
   const d = e.detail || {};
   lastFrameAt = performance.now();
-  if (idleNode.parent) scene.remove(idleNode);
+  if (idleNode.parent) space.remove(idleNode);
   updateNodes(Array.isArray(d.nodes) ? d.nodes : []);
 
   if (d.signal_field && Array.isArray(d.signal_field.values) && d.signal_field.values.length === FIELD * FIELD) {
@@ -312,6 +321,116 @@ window.addEventListener('ruview-frame', (e) => {
 
 const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
 
+// ---------- apartment floor plan + calibration ----------
+// cfg.px/py: where the first sensor sits on the Roomba map (map pixels);
+// cfg.rot: rotation of sensor space (degrees); cfg.scale: metres per map pixel.
+const sensorLocal = new THREE.Vector3(2, 0, 1.5);
+const CFG_KEY = 'obs.plan.v1';
+const LIVING = ROOMS.find((r) => r.name === 'Living Room').label;
+const cfg = Object.assign({ on: true, px: LIVING[0], py: LIVING[1], rot: 0, scale: DEFAULT_SCALE },
+  (() => { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch { return {}; } })());
+const saveCfg = () => { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch { /* ignore */ } };
+let plan = null;
+
+function rebuildPlan() {
+  if (plan) { scene.remove(plan.group); plan.group.traverse((o) => { o.geometry?.dispose(); }); plan = null; }
+  if (cfg.on) { plan = buildPlan(cfg.scale); scene.add(plan.group); }
+  grid.visible = !cfg.on;
+  scene.fog.density = cfg.on ? 0.028 : 0.055;
+  applyCalibration();
+}
+
+function applyCalibration() {
+  if (!cfg.on) { space.position.set(0, 0, 0); space.rotation.set(0, 0, 0); recomputeMask(); return; }
+  const rot = THREE.MathUtils.degToRad(cfg.rot);
+  const [wx, wz] = pxToWorld([cfg.px, cfg.py], cfg.scale);
+  space.rotation.set(0, rot, 0);
+  const r = sensorLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rot);
+  space.position.set(wx - r.x, 0, wz - r.z);
+  space.updateMatrixWorld(true);
+  recomputeMask();
+}
+
+function recomputeMask() {
+  const v = new THREE.Vector3();
+  for (let z = 0; z < FIELD; z++) for (let x = 0; x < FIELD; x++) {
+    const i = z * FIELD + x;
+    if (!cfg.on) { tileMask[i] = 1; continue; }
+    v.set((x + 0.5) / FIELD * ROOM - ROOM / 2, 0, (z + 0.5) / FIELD * ROOM - ROOM / 2);
+    space.localToWorld(v);
+    tileMask[i] = roomAt(v.x, v.z, cfg.scale) ? 1 : 0;
+  }
+}
+
+function frameCamera() {
+  controls.autoRotate = !cfg.on;
+  if (cfg.on) { camera.position.set(0, 10.5, 9.5); controls.target.set(0, 0, 0.6); controls.maxDistance = 30; }
+  else { camera.position.set(4.2, 3.0, 5.8); controls.target.set(0, 0.9, -0.5); controls.maxDistance = 18; }
+}
+
+// map panel controls
+const ui = {
+  on: document.getElementById('mapOn'), rot: document.getElementById('mapRot'), scale: document.getElementById('mapScale'),
+  place: document.getElementById('mapPlace'), rotV: document.getElementById('mapRotV'), scaleV: document.getElementById('mapScaleV'),
+  where: document.getElementById('obsWhere'), panel: document.getElementById('mapPanel'),
+};
+function syncUi() {
+  ui.on.checked = cfg.on; ui.rot.value = cfg.rot; ui.scale.value = Math.round(cfg.scale * 10000);
+  ui.rotV.textContent = cfg.rot + '°';
+  const w = (766 - 158) * cfg.scale;
+  ui.scaleV.textContent = w.toFixed(1) + ' m wide';
+  ui.panel.classList.toggle('off', !cfg.on);
+}
+ui.on.addEventListener('change', () => { cfg.on = ui.on.checked; saveCfg(); rebuildPlan(); frameCamera(); syncUi(); });
+ui.rot.addEventListener('input', () => { cfg.rot = Number(ui.rot.value); saveCfg(); applyCalibration(); syncUi(); });
+ui.scale.addEventListener('input', () => { cfg.scale = Number(ui.scale.value) / 10000; saveCfg(); rebuildPlan(); syncUi(); });
+
+let placing = false;
+ui.place.addEventListener('click', () => {
+  placing = !placing;
+  ui.place.textContent = placing ? 'Click the map…' : 'Place sensor';
+  ui.place.classList.toggle('armed', placing);
+});
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!placing || !downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = new THREE.Vector3();
+  if (!ray.ray.intersectPlane(ground, hit)) return;
+  cfg.px = hit.x / cfg.scale + 462; cfg.py = hit.z / cfg.scale + 740;
+  placing = false; ui.place.textContent = 'Place sensor'; ui.place.classList.remove('armed');
+  saveCfg(); applyCalibration();
+});
+
+// which room is each person in?
+const wpos = new THREE.Vector3();
+let lastRoomsKey = '';
+function updateRooms() {
+  const counts = new Map();
+  for (const f of figures) {
+    if (f.userData.talpha < 0.5 || !f.visible) continue;
+    f.getWorldPosition(wpos);
+    const name = cfg.on ? roomAt(wpos.x, wpos.z, cfg.scale) || 'Outside map' : null;
+    if (name) counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const key = [...counts].map(([n, c]) => n + ':' + c).sort().join('|');
+  if (key === lastRoomsKey) return;
+  lastRoomsKey = key;
+  if (plan) plan.setActive(new Set(counts.keys()));
+  ui.where.textContent = !cfg.on ? '' : counts.size
+    ? [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(' · ')
+    : '—';
+  window.dispatchEvent(new CustomEvent('ruview-rooms', { detail: Object.fromEntries(counts) }));
+}
+
+syncUi();
+rebuildPlan();
+frameCamera();
+
 // ---------- loop ----------
 function resize() {
   const w = host.clientWidth, h = host.clientHeight;
@@ -325,7 +444,7 @@ new ResizeObserver(resize).observe(host);
 resize();
 
 const clock = new THREE.Clock();
-let emitAcc = 0;
+let emitAcc = 0, roomAt0 = 0;
 function tick() {
   requestAnimationFrame(tick);
   if (!host.offsetParent) return; // tab hidden
@@ -337,6 +456,7 @@ function tick() {
   if (idleNode.parent) animateNode(idleNode, t);
   updateTiles(dt);
   figures.forEach((f) => updateFigure(f, dt, t));
+  if (performance.now() - roomAt0 > 250) { roomAt0 = performance.now(); updateRooms(); }
 
   emitAcc += dt;
   if (emitAcc > 0.08) {
@@ -380,6 +500,6 @@ window.addEventListener('ruview-vitals', (e) => {
 });
 
 document.getElementById('obsReset').addEventListener('click', () => {
-  camera.position.set(4.2, 3.0, 5.8); controls.target.set(0, 0.9, -0.5); controls.autoRotate = true;
+  frameCamera();
 });
 window.__observatoryReady = true;

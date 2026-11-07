@@ -59,6 +59,11 @@
     while (ol.children.length > 200) ol.lastChild.remove();
   }
   $('clearLog').addEventListener('click', () => ($('log').textContent = ''));
+  window.addEventListener('ruview-rooms', (e) => {
+    const rooms = Object.entries(e.detail || {});
+    if (!wantConnected) return;
+    log(rooms.length ? 'location · ' + rooms.map(([n, c]) => `${n}: ${c} ${c > 1 ? 'people' : 'person'}`).join(', ') : 'location · nobody on the map');
+  });
 
   // ---------- state ----------
   const HIST = 240;
@@ -297,19 +302,43 @@
     return KP_NAMES.map((name) => ({ name, x: cx + pts[name][0] * s, y: 380 + pts[name][1] * s, z: 0, confidence: 0.8 }));
   }
 
+  // Demo tour in sensor-space metres. With the default map calibration
+  // (sensor 1 in the middle of the Living Room) these land in real rooms.
+  const DEMO_PATH = [
+    [2, 1.5, 4], [2.1, -0.6, 0], [3.0, -3.6, 5], [2.1, -0.6, 0], [5.1, 0, 0],
+    [6.9, 3.2, 6], [5.1, 0, 0], [7.2, -2.2, 4], [5.1, 0, 0], [2.1, -0.6, 0],
+  ]; // [x, z, dwell seconds]
+  function demoTour(t) {
+    const speed = 0.9, segs = [];
+    let total = 0;
+    for (let i = 0; i < DEMO_PATH.length; i++) {
+      const a = DEMO_PATH[i], b = DEMO_PATH[(i + 1) % DEMO_PATH.length];
+      if (a[2]) { segs.push({ a, b: a, dur: a[2], walk: false }); total += a[2]; }
+      const dur = Math.hypot(b[0] - a[0], b[1] - a[1]) / speed;
+      segs.push({ a, b, dur, walk: true }); total += dur;
+    }
+    let u = t % total;
+    for (const sg of segs) {
+      if (u <= sg.dur) { const k = sg.dur ? u / sg.dur : 0; return { x: sg.a[0] + (sg.b[0] - sg.a[0]) * k, z: sg.a[1] + (sg.b[1] - sg.a[1]) * k, walking: sg.walk }; }
+      u -= sg.dur;
+    }
+    return { x: 2, z: 1.5, walking: false };
+  }
+
   // ---------- demo generator (sensing_update shape) ----------
   function startDemo() {
-    setConn('on', 'Demo running'); setHint('Synthetic data: one person walks in and out every ~40 s, another stands still.');
+    setConn('on', 'Demo running'); setHint('Synthetic data: one person tours the apartment, another rests in the bedroom.');
     log('demo stream started', 'ok');
     const N = 56, G = 20; const t0 = performance.now() / 1000;
     demoTimer = setInterval(() => {
       const t = performance.now() / 1000 - t0;
-      const presence = Math.sin(t * (2 * Math.PI / 40)) > -0.35;
-      const walking = presence && Math.sin(t * 0.45) > 0.2;
+      const tour = demoTour(t);
+      const presence = true;
+      const walking = tour.walking;
       const motion = presence ? (walking ? 0.16 + Math.random() * 0.06 : 0.04 + Math.random() * 0.02) : 0.01 + Math.random() * 0.01;
       const breath = presence && !walking ? 0.07 + 0.02 * Math.sin(t * 1.6) : 0.01 + Math.random() * 0.005;
       const rssi = -47 + Math.sin(t * 0.3) * 1.5 + (presence ? -2 : 0) + (Math.random() - 0.5) * (walking ? 3 : 0.8);
-      const bx = G / 2 + 6 * Math.sin(t * 0.25), bz = G / 2 + 5 * Math.cos(t * 0.19);
+      const bx = (tour.x + 5) / 10 * G - 0.5, bz = (tour.z + 5) / 10 * G - 0.5; // signal blob follows person A
       const values = [];
       for (let z = 0; z < G; z++) for (let x = 0; x < G; x++) {
         let v = 0.08 + Math.random() * 0.04;
@@ -322,17 +351,15 @@
       });
       handleFrame({
         type: 'sensing_update', timestamp: Date.now() / 1000, source: 'simulated', _simulated: true,
-        nodes: [{ node_id: 1, rssi_dbm: rssi, amplitude, subcarrier_count: N, sync: { is_valid: true, is_leader: true, csi_fps_ema: 9.8 } },
-                { node_id: 2, rssi_dbm: rssi - 6, amplitude: [], subcarrier_count: N, sync: { is_valid: true, is_leader: false, csi_fps_ema: 9.6 } }],
+        nodes: [{ node_id: 1, position: [2, 0, 1.5], rssi_dbm: rssi, amplitude, subcarrier_count: N, sync: { is_valid: true, is_leader: true, csi_fps_ema: 9.8 } },
+                { node_id: 2, position: [5.1, 0, 0], rssi_dbm: rssi - 6, amplitude: [], subcarrier_count: N, sync: { is_valid: true, is_leader: false, csi_fps_ema: 9.6 } }],
         features: { mean_rssi: rssi, motion_band_power: motion, breathing_band_power: breath },
         classification: { presence: true, motion_level: walking ? 'active' : 'present_still', confidence: presence ? 0.8 + Math.random() * 0.15 : 0.7 + Math.random() * 0.2 },
         estimated_persons: presence ? 2 : 1,
         persons: [
-          // person A walks a loop across the room, leaves and returns
-          ...(presence ? [{ id: 1, confidence: 0.85, position: [Math.sin(t * 0.25) * 3, 0, Math.cos(t * 0.19) * 2.5 - 0.5],
-            motion_score: walking ? 55 : 8, keypoints: demoKeypoints(t, walking, false) }] : []),
-          // person B stands near the wall, breathing, waving now and then
-          { id: 2, confidence: 0.8, position: [-2.6, 0, -2.4], motion_score: 4, keypoints: demoKeypoints(t, false, Math.sin(t * 0.3) > 0.85) },
+          // person A tours the apartment (see DEMO_PATH); person B rests in the bedroom
+          { id: 1, confidence: 0.85, position: [tour.x, 0, tour.z], motion_score: tour.walking ? 55 : 8, keypoints: demoKeypoints(t, tour.walking, false) },
+          { id: 2, confidence: 0.8, position: [7.4, 0, 4.1], motion_score: 4, keypoints: demoKeypoints(t, false, Math.sin(t * 0.3) > 0.85) },
         ],
         vital_signs: { breathing_bpm: 17 + Math.sin(t * 0.1) * 1.5, hr_proxy_bpm: 82 + Math.sin(t * 0.07) * 4 },
         signal_field: { grid_size: [G, 1, G], values },
