@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WiFi Sensing Bench</title>
+  <meta name="description" content="Test bench for RuView WiFi CSI sensing on your own network: presence, motion, breathing and signal field, live from a local sensing-server.">
+  <meta name="robots" content="noindex">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 12a17 17 0 0 1 24 0M8 16.5a11 11 0 0 1 16 0M12 21a5 5 0 0 1 8 0' fill='none' stroke='%2334d399' stroke-width='2.6' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='25' r='2' fill='%2334d399'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 12a17 17 0 0 1 24 0M8 16.5a11 11 0 0 1 16 0M12 21a5 5 0 0 1 8 0" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="16" cy="25" r="2" fill="currentColor"/></svg>
+      <div>
+        <h1>WiFi Sensing Bench</h1>
+        <p>RuView CSI test bench for your own network</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="srcBadge" class="badge idle">NO SOURCE</span>
+      <span id="connPill" class="pill"><i></i><b id="connText">Disconnected</b></span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab active" data-tab="live">Live</button>
+    <button role="tab" class="tab" data-tab="setup">Setup</button>
+    <button role="tab" class="tab" data-tab="about">About the research</button>
+  </nav>
+
+  <main>
+    <!-- LIVE -->
+    <section id="tab-live" class="panel active">
+      <form id="connForm" class="conn">
+        <label class="field">
+          <span>Source</span>
+          <select id="mode">
+            <option value="bridge">Local bridge (recommended)</option>
+            <option value="direct">Direct WebSocket</option>
+            <option value="demo">Demo data (no hardware)</option>
+          </select>
+        </label>
+        <label class="field grow" id="urlField">
+          <span id="urlLabel">Bridge URL</span>
+          <input id="url" type="text" spellcheck="false" autocomplete="off" value="http://127.0.0.1:3100">
+        </label>
+        <button id="connectBtn" class="btn primary" type="submit">Connect</button>
+      </form>
+      <p id="hint" class="hint"></p>
+
+      <div class="tiles">
+        <article class="tile" id="tPresence">
+          <h3>Presence</h3>
+          <div class="big" id="vPresence">—</div>
+          <div class="sub" id="vMotion">motion: —</div>
+        </article>
+        <article class="tile">
+          <h3>People</h3>
+          <div class="big" id="vPersons">—</div>
+          <div class="sub" id="vConf">confidence: —</div>
+        </article>
+        <article class="tile">
+          <h3>Breathing</h3>
+          <div class="big"><span id="vBreath">—</span><small>bpm</small></div>
+          <div class="sub">not medical-grade</div>
+        </article>
+        <article class="tile">
+          <h3>Heart rate</h3>
+          <div class="big"><span id="vHeart">—</span><small>bpm</small></div>
+          <div class="sub">proxy, unvalidated</div>
+        </article>
+        <article class="tile">
+          <h3>Mean RSSI</h3>
+          <div class="big"><span id="vRssi">—</span><small>dBm</small></div>
+          <div class="sub" id="vNodes">nodes: —</div>
+        </article>
+        <article class="tile">
+          <h3>Frames</h3>
+          <div class="big"><span id="vFps">—</span><small>/s</small></div>
+          <div class="sub" id="vTotal">total: 0</div>
+        </article>
+      </div>
+
+      <div class="grid2">
+        <article class="card wide">
+          <header><h2>Signal history</h2><span class="legend"><i class="k1"></i>RSSI <i class="k2"></i>motion band <i class="k3"></i>breathing band</span></header>
+          <canvas id="cHistory" height="220"></canvas>
+        </article>
+        <article class="card">
+          <header><h2>Signal field</h2><span class="muted" id="fieldMeta">—</span></header>
+          <canvas id="cField" class="square"></canvas>
+        </article>
+        <article class="card">
+          <header><h2>Subcarrier waterfall</h2><span class="muted" id="wfMeta">—</span></header>
+          <canvas id="cWaterfall" class="square"></canvas>
+        </article>
+      </div>
+
+      <div class="grid2">
+        <article class="card">
+          <header><h2>Nodes</h2></header>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th>Node</th><th>RSSI</th><th>Subcarriers</th><th>CSI fps</th><th>Sync</th></tr></thead>
+              <tbody id="nodeRows"><tr><td colspan="5" class="muted">No frames yet</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="card">
+          <header><h2>Event log</h2><button id="clearLog" class="btn ghost sm" type="button">Clear</button></header>
+          <ol id="log" class="log"></ol>
+        </article>
+      </div>
+
+      <details class="card raw">
+        <summary>Last raw frame</summary>
+        <pre id="raw">—</pre>
+      </details>
+    </section>
+
+    <!-- SETUP -->
+    <section id="tab-setup" class="panel">
+      <div class="prose">
+        <h2>How the pieces connect</h2>
+        <div class="flow">
+          <div class="node"><b>ESP32-S3 node</b><span>captures CSI from your router</span></div>
+          <div class="arrow">UDP 5005</div>
+          <div class="node"><b>sensing-server</b><span>Docker on your PC, port 3000</span></div>
+          <div class="arrow">token + ticket</div>
+          <div class="node"><b>ruview-bridge</b><span>127.0.0.1:3100, adds CORS</span></div>
+          <div class="arrow">browser</div>
+          <div class="node accent"><b>This page</b><span>tracker.ciprari.ai</span></div>
+        </div>
+        <p>All sensing data stays on your network. This page is static; it only connects to <code>127.0.0.1</code> on the computer you open it on. Nothing is sent to Cloudflare.</p>
+
+        <h3>0 · Try it with no hardware</h3>
+        <p>Choose <b>Demo data</b> on the Live tab. Or run the real server in simulated mode (step 2 without an ESP32) to test the full chain.</p>
+
+        <h3>1 · Flash and provision an ESP32-S3</h3>
+        <p>An ESP32-S3 (~$9) is the supported CSI source. ESP32-C3 and the original ESP32 are not supported. A plain laptop gives RSSI-only, coarse presence. Flash the firmware from the RuView repo, then point it at your PC's LAN IP:</p>
+        <div class="code"><pre>python firmware/esp32-csi-node/provision.py --port COM5 \
+  --ssid "YourWiFi" --password "YourWiFiPassword" \
+  --target-ip 192.168.1.20</pre><button class="copy">Copy</button></div>
+        <p class="muted">Replace <code>COM5</code>, the network name, and <code>192.168.1.20</code> (your PC's IP, from <code>ipconfig</code>).</p>
+
+        <h3>2 · Run the sensing-server (Docker)</h3>
+        <p>PowerShell:</p>
+        <div class="code"><pre>$env:RUVIEW_API_TOKEN = -join ((1..32) | % { '{0:x2}' -f (Get-Random -Max 256) })
+docker run --rm -e RUVIEW_API_TOKEN -e CSI_SOURCE=esp32 `
+  -e RUVIEW_UDP_ALLOW=192.168.1.0/24 `
+  -p 127.0.0.1:3000:3000 -p 5005:5005/udp `
+  ruvnet/wifi-densepose:latest</pre><button class="copy">Copy</button></div>
+        <p class="muted">Drop <code>-e CSI_SOURCE=esp32</code>, the UDP allow-list and <code>-p 5005:5005/udp</code> to run on simulated data. Adjust the subnet to your LAN. Allow UDP 5005 through Windows Firewall when prompted. If the node never appears, Docker Desktop may be rewriting the source address to its own gateway; as a test-only fallback, replace the allow-list with <code>-e RUVIEW_UDP_INSECURE_LAN=true</code>.</p>
+
+        <h3>3 · Start the bridge (same PowerShell window)</h3>
+        <p>Needs Node 18+. It reads the token from the environment, so the token never touches the browser.</p>
+        <div class="code"><pre>node bridge/ruview-bridge.mjs</pre><button class="copy">Copy</button></div>
+        <p class="muted">The file is in the <code>coledtouch/tracker</code> repo under <code>bridge/</code>. Or <a href="ruview-bridge.mjs" download>download it here</a>.</p>
+
+        <h3>4 · Connect</h3>
+        <p>On the Live tab choose <b>Local bridge</b> and press Connect. Chrome may ask to allow access to devices on your local network; allow it for this site.</p>
+
+        <h3>Phones and other devices</h3>
+        <p>An https page can reach <code>127.0.0.1</code> but browsers block it from reaching plain <code>http://192.168.x.x</code>. To watch from a phone, open RuView's own UI on your LAN (set <code>SENSING_ALLOWED_HOSTS</code> and publish port 3000 on <code>0.0.0.0</code>) or put the bridge behind a Cloudflare Tunnel with Cloudflare Access in front of it.</p>
+
+        <h3>Direct mode</h3>
+        <p>For an older server, or one started with <code>RUVIEW_WS_LEGACY_UNAUTHENTICATED=1</code>, choose <b>Direct WebSocket</b> and use <code>ws://localhost:3000/ws/sensing</code>. That flag turns off WebSocket auth, so only use it on a server bound to 127.0.0.1.</p>
+      </div>
+    </section>
+
+    <!-- ABOUT -->
+    <section id="tab-about" class="panel">
+      <div class="prose">
+        <h2>What this bench is testing</h2>
+        <p>WiFi signals bend and reflect off bodies. A receiver that reads the fine-grained channel data can infer presence, motion and breathing without a camera.</p>
+
+        <div class="two">
+          <div class="box">
+            <h3>RuView (what you run)</h3>
+            <p>Open-source sensing from WiFi Channel State Information (CSI) captured by ESP32-S3 nodes. It reports presence, occupancy, motion, breathing and a heart-rate proxy, and runs locally with no cloud.</p>
+            <p class="muted">Per its README: the live single-node pose model is first-cut, named-person identification is not shipped, and vitals are not medical-grade.</p>
+            <a href="https://github.com/ruvnet/ruview" target="_blank" rel="noopener">github.com/ruvnet/ruview ↗</a>
+          </div>
+          <div class="box">
+            <h3>BFId (the privacy warning)</h3>
+            <p>KIT researchers showed at ACM CCS 2025 that people can be identified from <em>beamforming feedback</em>, which devices send to routers unencrypted. In a 197-person test they reported near-100% accuracy, even for people carrying no phone.</p>
+            <p class="muted">They frame it as a risk and call for safeguards in the upcoming IEEE 802.11bf standard.</p>
+            <a href="https://www.sciencedaily.com/releases/2026/05/260522023127.htm" target="_blank" rel="noopener">ScienceDaily article ↗</a>
+          </div>
+        </div>
+
+        <h3>Use it responsibly</h3>
+        <ul>
+          <li>Sense only spaces you control, and tell the people in them.</li>
+          <li>Keep the server bound to <code>127.0.0.1</code> and the API token set.</li>
+          <li>Recordings of breathing and movement are sensitive personal data. Delete what you don't need.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">Static page · data stays on your machine · <a href="https://github.com/coledtouch/tracker" target="_blank" rel="noopener">source</a></footer>
+  <script src="app.js"></script>
+</body>
+</html>
